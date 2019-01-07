@@ -14,6 +14,12 @@ by the function declaring that variable, or else they MUST BE used in
 such a way that requires them to be non-const (i.e. returned as a
 non-const value or passed as a non-const argument).
 
+misc
+----
+
+Put commas after the last element of sequences, e.g. array initializers,
+enum definitions, etc.
+
 */
 
 #include <ctype.h>
@@ -21,24 +27,38 @@ non-const value or passed as a non-const argument).
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <stdint.h>
 
 #include <sys/mman.h>
 
 #include "x64.h"
 
-/* Intrusive singly-linked list */
+/* Fatal error function */
+
+static void error(const char* const msg, ...) {
+  va_list ap;
+  va_start(ap, msg);
+  vfprintf(stderr, msg, ap);
+  va_end(ap);
+
+  exit(1);
+}
+
+/* Some data structures */
+
+/** Intrusive singly-linked list **/
 
 struct slist {
   void* next; // this is void* so it can be autocast to the right type
 };
 
-void slist_push(struct slist* const list, struct slist* new_node) {
+static void slist_push(struct slist* const list, struct slist* new_node) {
   new_node->next = list;
 }
 
 typedef int(*slist_find_pred)(const void*, const void*);
 
-void* slist_find(struct slist* list, const slist_find_pred pred, const void* const context) {
+static void* slist_find(struct slist* list, const slist_find_pred pred, const void* const context) {
   while (list) {
     if (pred(list, context)) {
       return list;
@@ -50,37 +70,77 @@ void* slist_find(struct slist* list, const slist_find_pred pred, const void* con
   return NULL;
 }
 
-/* Fatal error */
+/** Stack **/
 
-void error(const char* const msg, ...) {
-  va_list ap;
-  va_start(ap, msg);
-  vprintf(msg, ap);
-  va_end(ap);
-
-  exit(1);
-}
-
-/* Stack */
-
-void stack_new(void*** const base, void*** const top, size_t initial_size) {
+static void stack_new(void*** const base, void*** const top, size_t initial_size) {
   *base = calloc(sizeof(*base), initial_size);
   *top = *base + initial_size - 1;
   *top = (void*)((uintptr_t)*top & ~15ULL); // 16-byte alignment for the stack
 }
 
-void stack_push(void*** const s, void* const value) {
+static void stack_push(void*** const s, void* const value) {
   --*s;
   **s = value;
 }
 
-void* stack_pop(void*** const s) {
+static void* stack_pop(void*** const s) {
   void* const val = **s;
   ++*s;
   return val;
 }
 
-/* Some common definitions */
+/** Vector **/
+
+struct vector {
+  char* data;
+  size_t fill, size;
+};
+
+void vector_new(struct vector* const vec) {
+  vec->data = NULL;
+  vec->fill = 0;
+  vec->size = 0;
+}
+
+void vector_delete(struct vector* const vec) {
+  free(vec->data);
+  vec->data = NULL;
+  vec->fill = 0;
+  vec->size = 0;
+}
+
+void* vector_append(struct vector* const vec, const size_t size) {
+  // check for overflow
+  if (vec->fill + size < size) {
+    error("Overflow in vector size");
+  }
+
+  const size_t newfill = vec->fill + size;
+
+  if (newfill > vec->size) {
+    vec->size = newfill * 2;
+    vec->data = realloc(vec->data, vec->size);
+
+    if (!vec->data) {
+      error("Failed to allocate %lu bytes for vector", (unsigned long)vec->size);
+    }
+  }
+
+  void* const new_element = vec->data + vec->fill;
+
+  vec->fill = newfill;
+  
+  return new_element;
+}
+
+#define VECTOR_APPEND(VEC, TYPE, VALUE)         \
+  *(TYPE*)vector_append((VEC), sizeof(TYPE)) = (VALUE)
+
+void* vector_data(struct vector* const vec) {
+  return vec->data;
+}
+
+/* Some common typedefs */
 
 typedef long (*guest_function)(void**);
 
@@ -94,17 +154,17 @@ struct symtab {
 
 #define SYMTAB_EMPTY NULL
 
-int symtab_name_equals(const struct symtab* const tab, const char* const symbol_name) {
+static int symtab_name_equals(const struct symtab* const tab, const char* const symbol_name) {
   return strcmp(tab->symbol_name, symbol_name) == 0;
 }
 
-struct symtab* symtab_lookup_symbol(struct symtab* tab, const char* const symbol_name) {
+static struct symtab* symtab_lookup_symbol(struct symtab* tab, const char* const symbol_name) {
   return slist_find(&tab->list, (slist_find_pred)symtab_name_equals, symbol_name);
 }
 
-struct symtab* symtab_add_symbol(struct symtab* const tab,
-                                 const char* const symbol_name,
-                                 void* const symbol_value)
+static struct symtab* symtab_add_symbol(struct symtab* const tab,
+                                        const char* const symbol_name,
+                                        void* const symbol_value)
 {
   struct symtab* const new_entry = calloc(sizeof(struct symtab), 1);
 
@@ -118,15 +178,23 @@ struct symtab* symtab_add_symbol(struct symtab* const tab,
 
 /* Reader structures */
 
+enum rd_type {
+  rd_type_symbol,
+  rd_type_number,
+  rd_type_string,
+  rd_type_quote,
+  rd_type_cons,
+};
+
 /** "base-class" of all the types that the reader can return **/
 struct rd_object {
-  long type;
+  enum rd_type type;
 };
 
 struct rd_symbol {
   struct rd_object base;
 
-  const char* const repr;
+  const char* repr;
 };
 
 struct rd_number {
@@ -156,66 +224,191 @@ struct rd_cons {
 
 /** Readtable **/
 
-long read_symbol(void** stackptr) {
-}
+#define BIT(X) (1 << X)
 
-long read_number(void** stackptr) {
-}
-long read_string(void** stackptr) {
-}
-long read_error(void** stackptr) {
-}
-long read_quote(void** stackptr) {
-}
-long read_list(void** stackptr) {
-}
-
-struct readtable {
-  guest_function dispatch[256];
+enum cprop {
+  cprop_constituent = BIT(0),
+  cprop_number_init = BIT(1),
+  cprop_number      = BIT(2),
+  cprop_macro       = BIT(4),
+  cprop_whitespace  = BIT(5),
+  cprop_error       = BIT(6),
 };
 
-const struct readtable default_readtable = {
-  {
-    ['a' ... 'z'] = read_symbol,
-    ['A' ... 'Z'] = read_symbol,
-    ['_']         = read_symbol,
-    ['!']         = read_symbol,
-    ['@']         = read_symbol,
-    ['#']         = read_symbol,
-    ['$']         = read_symbol,
-    ['%']         = read_symbol,
-    ['^']         = read_symbol,
-    ['&']         = read_symbol,
-    ['*']         = read_symbol,
-    ['-']         = read_number,
-    ['+']         = read_number,
-    ['0' ... '9'] = read_number,
-    ['"']         = read_string,
-    ['[']         = read_quote,
-    [']']         = read_error,
-    ['(']         = read_list,
-    [')']         = read_error,
-  }
+typedef unsigned char char_prop_t;
+
+struct readtable {
+  char_prop_t char_properties[256];
+
+  guest_function macro_dispatch[256];
 };
 
 /* Some globals */
 
-struct symtab** global_symbol_table;
+static struct symtab** global_symbol_table;
 
-struct readtable** current_readtable;
+static struct readtable** current_readtable;
 
 /* Functions */
 
-long read(void** stack) {
+/** Reader functions **/
+
+static long read_symbol(void** stack) {
+  intptr_t character = (intptr_t)stack_pop(&stack);
   FILE* const stream = stack_pop(&stack);
 
-  int character = fgetc(stream);
+  struct vector symrepr;
+  vector_new(&symrepr);
 
-  character = toupper(character);
-  const guest_function handler = (*current_readtable)->dispatch[character & 0xff];
+  VECTOR_APPEND(&symrepr, char, character);
 
-  if (!handler) {
-    error("Invalid character '%c'", character);
+  while (1) {
+    character = fgetc(stream);
+
+    if (character == EOF) {
+      break;
+    }
+
+    character = toupper(character & 0xff);
+
+    const char_prop_t cprop = (*current_readtable)->char_properties[character];
+
+    if (!(cprop & cprop_constituent)) {
+      ungetc(character, stream);
+      break;
+    }
+
+    VECTOR_APPEND(&symrepr, char, character);
+  }
+
+  struct rd_symbol* sym = calloc(sizeof(*sym), 1);
+
+  sym->base.type = rd_type_symbol;
+  sym->repr = vector_data(&symrepr);
+
+  stack_push(&stack, sym);
+
+  return return_to_guest(stack);
+}
+
+static long read_number(void** stack) {
+  intptr_t character = (intptr_t)stack_pop(&stack);
+  FILE* const stream = stack_pop(&stack);
+
+  int negate = 0;
+  long value = 0;
+
+  if (character == '-') {
+    negate = 1;
+  } else if (character == '+') {
+    // nothing
+  } else {
+    value = character - '0';
+  }
+
+  long factor = 10;
+
+  while (1) {
+    character = fgetc(stream);
+
+    if (character == EOF) {
+      break;
+    }
+
+    const char_prop_t cprop = (*current_readtable)->char_properties[character];
+
+    if (!(cprop & cprop_number)) {
+      ungetc(character, stream);
+      break;
+    }
+
+    value += (character - '0') * factor;
+    factor *= 10;
+  }
+
+  if (negate) {
+    value = -value;
+  }
+
+  struct rd_number* const num = calloc(sizeof(*num), 1);
+  num->base.type = rd_type_number;
+  num->value = value;
+
+  stack_push(&stack, num);
+
+  return return_to_guest(stack);
+}
+static long read_string(void** stack) {
+  return return_to_guest(stack);
+}
+static long read_error(void** stack) {
+  return return_to_guest(stack);
+}
+static long read_quote(void** stack) {
+  return return_to_guest(stack);
+}
+static long read_list(void** stack) {
+  return return_to_guest(stack);
+}
+static long read_comment(void** stack) {
+  return return_to_guest(stack);
+}
+
+static long read(void** stack) {
+  FILE* const stream = stack_pop(&stack);
+
+  int character = 0;
+
+  // the work done below is to fill this out so we know which function
+  // is appropriate to read the datum, then we call it and return
+  guest_function handler = NULL;
+
+
+  while (1) {
+    character = fgetc(stream);
+
+    if (character == EOF) {
+      stack_push(&stack, NULL);
+      return return_to_guest(stack);
+    }
+
+    character = toupper(character & 0xff);
+
+    const char_prop_t cprop = (*current_readtable)->char_properties[character];
+
+    if (cprop & cprop_error) {
+      error("Reader encountered illegal character '%c' (%d)\n", character, character);
+    }
+
+    if (cprop & cprop_whitespace) {
+      continue;
+    }
+
+    if (cprop & cprop_macro) {
+      handler = (*current_readtable)->macro_dispatch[character];
+
+      if (!handler) {
+        error("Invalid character '%c' (%d)", character, character);
+      }
+
+      break;
+    }
+
+    if (cprop & cprop_number_init) {
+      handler = read_number;
+      break;
+    }
+
+    if (cprop & cprop_constituent) {
+      handler = read_symbol;
+      break;
+    }
+
+    if (cprop & cprop_number) {
+      error("Encountered number continuation outside of a number");
+    }
+
+    error("Encountered character with no properties '%c' (%d)", character, character);
   }
 
   stack_push(&stack, stream);
@@ -223,10 +416,80 @@ long read(void** stack) {
 
   call_guest_function(handler, &stack);
 
-  struct rd_object* const obj = stack_pop(&stack);
+  //struct rd_object* const obj = stack_pop(&stack);
 
   return return_to_guest(stack);
 }
+
+/** Compiler **/
+
+long compile(void** stack) {
+  struct rd_object* const obj = stack_pop(&stack);
+
+  switch (obj->type) {
+  case rd_type_symbol:
+    
+    break;
+  case rd_type_number:
+  case rd_type_string:
+  case rd_type_quote:
+  case rd_type_cons:
+    
+  }
+
+  return return_to_guest(stack);
+}
+
+/* The default readtable, which is immutable */
+
+static const struct readtable default_readtable = {
+  { // char_properties
+    ['a' ... 'z'] = cprop_constituent,
+    ['A' ... 'Z'] = cprop_constituent,
+    ['_']         = cprop_constituent,
+    ['!']         = cprop_constituent,
+    ['@']         = cprop_constituent,
+    ['#']         = cprop_constituent,
+    ['$']         = cprop_constituent,
+    ['%']         = cprop_constituent,
+    ['^']         = cprop_constituent,
+    ['&']         = cprop_constituent,
+    ['*']         = cprop_constituent,
+    [':']         = cprop_constituent,
+    [',']         = cprop_constituent,
+    ['.']         = cprop_constituent,
+    ['<']         = cprop_constituent,
+    ['>']         = cprop_constituent,
+    ['=']         = cprop_constituent,
+    ['/']         = cprop_constituent,
+    ['?']         = cprop_constituent,
+
+    ['-']         = cprop_number_init | cprop_constituent,
+    ['+']         = cprop_number_init | cprop_constituent,
+    ['0' ... '9'] = cprop_number_init | cprop_number | cprop_constituent,
+
+    [';']         = cprop_macro,
+    ['"']         = cprop_macro,
+    ['[']         = cprop_macro,
+    [']']         = cprop_error,
+    ['(']         = cprop_macro,
+    [')']         = cprop_error,
+
+    [' ']         = cprop_whitespace,
+    ['\n']        = cprop_whitespace,
+    ['\t']        = cprop_whitespace,
+    ['\r']        = cprop_whitespace,
+  },
+  
+  { // macro_dispatch
+    ['"']         = read_string,
+    ['[']         = read_quote,
+    [']']         = read_error,
+    ['(']         = read_list,
+    [')']         = read_error,
+    [';']         = read_comment,
+  }
+};
 
 int main(const int argc, const char* const argv[const]) {
   /* Create globals accessible from the guest */

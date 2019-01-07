@@ -18,11 +18,11 @@ static inline void call_guest_function(void* guest_function, void*** stackptr) {
 }
 
 static inline long return_to_guest(void** stackptr) {
-  /* The point of this function is just for the compiler to put the
-   * new stack pointer into RDI because that's where guest functions
-   * expect it to be. It only has a return value so that the compiler
-   * will most likely not reorder the call to this function before
-   * some other code that might clobber RDI. */
+  /* The point of this function is just for the compiler to put the new stack
+   * pointer into RDI because that's where guest functions expect it to be. It
+   * only has a return value so that the compiler will most likely not reorder
+   * the call to this function before some other code that might clobber
+   * RDI. The actual value of the return is meaningless. */
 
   long x;
 
