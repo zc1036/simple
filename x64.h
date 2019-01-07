@@ -8,11 +8,16 @@ static inline void call_guest_function(void* guest_function, void*** stackptr) {
   void** new_stackptr;
 
   asm volatile ("mov %1, %%rdi;"
+                //"and $0xfffffffffffffff0, %%rsp;"
+                "mov %%rsp, %%r15;"
+                "and $0xfffffffffffffff0, %%rsp;"
+                "sub $8, %%rsp;"
                 "call *%2;"
+                "mov %%r15, %%rsp;"
                 "mov %%rdi, %0"
                 : "=r" (new_stackptr)
                 : "r" (*stackptr), "r" (guest_function)
-                : "%rdi");
+                : "%rdi", "%rsi", "%rdx", "%rcx", "%rax", "%r8", "%r9", "%r10", "%r11", "%r15");
 
   *stackptr = new_stackptr;
 }

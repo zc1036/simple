@@ -32,6 +32,7 @@ enum definitions, etc.
 #include <sys/mman.h>
 
 #include "x64.h"
+#include "asm.h"
 
 /* Fatal error function */
 
@@ -222,6 +223,15 @@ struct rd_cons {
   void* car, * cdr;
 };
 
+union rd_any {
+  struct rd_object base;
+  struct rd_symbol sym;
+  struct rd_number num;
+  struct rd_string str;
+  struct rd_quote quote;
+  struct rd_cons cons;
+};
+
 /** Readtable **/
 
 #define BIT(X) (1 << X)
@@ -248,6 +258,8 @@ struct readtable {
 static struct symtab** global_symbol_table;
 
 static struct readtable** current_readtable;
+
+static unsigned char** program_area_ptr;
 
 /* Functions */
 
@@ -424,18 +436,44 @@ static long read(void** stack) {
 /** Compiler **/
 
 long compile(void** stack) {
-  struct rd_object* const obj = stack_pop(&stack);
+  union rd_any* const rdobj = stack_pop(&stack);
 
-  switch (obj->type) {
+  void* ret = NULL;
+
+  switch (rdobj->base.type) {
   case rd_type_symbol:
-    
+    {
+      struct symtab* const obj = symtab_lookup_symbol(*global_symbol_table, rdobj->sym.repr);
+
+      if (!obj) {
+        error("The name '%s' is undefined", rdobj->sym.repr);
+      }
+
+      ret = *program_area_ptr;
+      *program_area_ptr = asm_call(*program_area_ptr, obj->symbol_value);
+    }
     break;
   case rd_type_number:
+    ret = *program_area_ptr;
+    *program_area_ptr = asm_integer(*program_area_ptr, rdobj->num.value);
+    break;
   case rd_type_string:
   case rd_type_quote:
   case rd_type_cons:
-    
+    error("unimplemented");
   }
+
+  stack_push(&stack, ret);
+
+  return return_to_guest(stack);
+}
+
+/** Evaluator **/
+
+long eval(void** stack) {
+  guest_function function = stack_pop(&stack);
+
+  call_guest_function(function, &stack);
 
   return return_to_guest(stack);
 }
@@ -509,15 +547,16 @@ int main(const int argc, const char* const argv[const]) {
   /** Create page-aligned program area and set memory protections such
    ** that it's executable (DEP is for weenies) **/
 
-#define PAGE_SIZE 4096
-#define PROGRAM_AREA_SIZE (PAGE_SIZE * 128) // 128 * 4K = .5 mb
+#define PAGE_SIZE 4096ULL
+#define PROGRAM_AREA_SIZE (PAGE_SIZE * 128ULL) // 128 * 4K = .5 mb
 
-  unsigned char* program_area = calloc(PROGRAM_AREA_SIZE + 1, PAGE_SIZE);
+  unsigned char* program_area = calloc(PROGRAM_AREA_SIZE + PAGE_SIZE, 1);
+  memset(program_area, 0xcc, PROGRAM_AREA_SIZE + PAGE_SIZE);
   program_area = (void*)(((intptr_t)program_area + PAGE_SIZE) & ~4095ULL);
 
   mprotect(program_area, PROGRAM_AREA_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC);
 
-  unsigned char** program_area_ptr = malloc(sizeof(*program_area_ptr));
+  program_area_ptr = malloc(sizeof(*program_area_ptr));
   *program_area_ptr = program_area;
 
   /* Register globals */
@@ -538,7 +577,15 @@ int main(const int argc, const char* const argv[const]) {
   /* Main program */
 
   for (int i = 1; i < argc; ++i) {
-    *input = fopen(argv[i], "rb");
+    if (strcmp(argv[i], "-") == 0) {
+      *input = stdin;
+    } else {
+      *input = fopen(argv[i], "rb");
+    }
+
+    if (!*input) {
+      error("Could not open file '%s'", argv[i]);
+    }
 
     struct rd_object* obj;
 
