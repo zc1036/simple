@@ -42,6 +42,8 @@ static void error(const char* const msg, ...) {
   vfprintf(stderr, msg, ap);
   va_end(ap);
 
+  fputc('\n', stderr);
+
   exit(1);
 }
 
@@ -97,20 +99,24 @@ struct vector {
   size_t fill, size;
 };
 
-void vector_new(struct vector* const vec) {
+static void vector_new(struct vector* const vec) {
   vec->data = NULL;
   vec->fill = 0;
   vec->size = 0;
 }
 
-void vector_delete(struct vector* const vec) {
+static void vector_delete(struct vector* const vec) {
   free(vec->data);
   vec->data = NULL;
   vec->fill = 0;
   vec->size = 0;
 }
 
-void* vector_append(struct vector* const vec, const size_t size) {
+static inline size_t vector_length(const struct vector* const vec) {
+  return vec->fill;
+}
+
+static void* vector_append(struct vector* const vec, const size_t size) {
   // check for overflow
   if (vec->fill + size < size) {
     error("Overflow in vector size");
@@ -137,9 +143,12 @@ void* vector_append(struct vector* const vec, const size_t size) {
 #define VECTOR_APPEND(VEC, TYPE, VALUE)         \
   *(TYPE*)vector_append((VEC), sizeof(TYPE)) = (VALUE)
 
-void* vector_data(struct vector* const vec) {
+static inline void* vector_data(struct vector* const vec) {
   return vec->data;
 }
+
+#define VECTOR_AT(VEC, T, IDX)                  \
+  (((T*)vector_data((VEC)))[IDX])
 
 /* Some common typedefs */
 
@@ -263,9 +272,12 @@ static unsigned char** program_area_ptr;
 
 /* Functions */
 
+#define GUESTFUNC(NAME, ARGNAME)                \
+  long NAME(void** ARGNAME)
+
 /** Reader functions **/
 
-static long read_symbol(void** stack) {
+static GUESTFUNC(read_symbol, stack) {
   intptr_t character = (intptr_t)stack_pop(&stack);
   FILE* const stream = stack_pop(&stack);
 
@@ -303,22 +315,22 @@ static long read_symbol(void** stack) {
   return return_to_guest(stack);
 }
 
-static long read_number(void** stack) {
+static GUESTFUNC(read_number, stack) {
   intptr_t character = (intptr_t)stack_pop(&stack);
   FILE* const stream = stack_pop(&stack);
 
+  struct vector repr;
+  vector_new(&repr);
+
   int negate = 0;
-  long value = 0;
 
   if (character == '-') {
     negate = 1;
   } else if (character == '+') {
     // nothing
   } else {
-    value = character - '0';
+    VECTOR_APPEND(&repr, char, character);
   }
-
-  long factor = 10;
 
   while (1) {
     character = fgetc(stream);
@@ -334,7 +346,14 @@ static long read_number(void** stack) {
       break;
     }
 
-    value += (character - '0') * factor;
+    VECTOR_APPEND(&repr, char, character);
+  }
+
+  long value = 0;
+  long factor = 1;
+
+  for (size_t i = vector_length(&repr); i > 0; --i) {
+    value += (VECTOR_AT(&repr, char, i - 1) - '0') * factor;
     factor *= 10;
   }
 
@@ -350,23 +369,24 @@ static long read_number(void** stack) {
 
   return return_to_guest(stack);
 }
-static long read_string(void** stack) {
+static GUESTFUNC(read_string, stack) {
+  error("%s not implemented", __func__);
   return return_to_guest(stack);
 }
-static long read_error(void** stack) {
+static GUESTFUNC(read_error, stack) {
+  error("%s not implemented", __func__);
   return return_to_guest(stack);
 }
-static long read_quote(void** stack) {
+static GUESTFUNC(read_quote, stack) {
+  error("%s not implemented", __func__);
   return return_to_guest(stack);
 }
-static long read_list(void** stack) {
-  return return_to_guest(stack);
-}
-static long read_comment(void** stack) {
+static GUESTFUNC(read_list, stack) {
+  error("%s not implemented", __func__);
   return return_to_guest(stack);
 }
 
-static long read(void** stack) {
+static GUESTFUNC(read, stack) {
   FILE* const stream = stack_pop(&stack);
 
   int character = 0;
@@ -435,7 +455,7 @@ static long read(void** stack) {
 
 /** Compiler **/
 
-long compile(void** stack) {
+static GUESTFUNC(compile, stack) {
   union rd_any* const rdobj = stack_pop(&stack);
 
   void* ret = NULL;
@@ -470,10 +490,35 @@ long compile(void** stack) {
 
 /** Evaluator **/
 
-long eval(void** stack) {
-  guest_function function = stack_pop(&stack);
+static GUESTFUNC(eval, stack) {
+  /** eval: obj -> ?  
 
-  call_guest_function(function, &stack);
+      The eval() function doesn't modify the stack in its own right,
+      but simply evaluates its argument and leaves its results on the
+      stack. **/
+
+  union rd_any* const rdobj = stack_pop(&stack);
+
+  switch (rdobj->base.type) {
+  case rd_type_symbol:
+    {
+      struct symtab* const obj = symtab_lookup_symbol(*global_symbol_table, rdobj->sym.repr);
+
+      if (!obj) {
+        error("The name '%s' is undefined", rdobj->sym.repr);
+      }
+
+      call_guest_function(obj->symbol_value, &stack);
+    }
+    break;
+  case rd_type_number:
+    stack_push(&stack, (void*)rdobj->num.value);
+    break;
+  case rd_type_string:
+  case rd_type_quote:
+  case rd_type_cons:
+    error("unimplemented");
+  }
 
   return return_to_guest(stack);
 }
@@ -525,7 +570,6 @@ static const struct readtable default_readtable = {
     [']']         = read_error,
     ['(']         = read_list,
     [')']         = read_error,
-    [';']         = read_comment,
   }
 };
 
@@ -552,7 +596,9 @@ int main(const int argc, const char* const argv[const]) {
 
   unsigned char* program_area = calloc(PROGRAM_AREA_SIZE + PAGE_SIZE, 1);
   memset(program_area, 0xcc, PROGRAM_AREA_SIZE + PAGE_SIZE);
-  program_area = (void*)(((intptr_t)program_area + PAGE_SIZE) & ~4095ULL);
+
+  // mprotect wants a page-aligned pointer
+  program_area = (void*)(((uintptr_t)program_area + PAGE_SIZE) & ~4095ULL);
 
   mprotect(program_area, PROGRAM_AREA_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC);
 
@@ -563,7 +609,7 @@ int main(const int argc, const char* const argv[const]) {
 
 #define ADD_SYM(NAME, VALUE) *global_symbol_table = symtab_add_symbol(*global_symbol_table, (NAME), (VALUE));
   ADD_SYM("*SYMTAB*", global_symbol_table);
-  ADD_SYM("*READTAB*", global_symbol_table);
+  ADD_SYM("*READTAB*", current_readtable);
   ADD_SYM("*IN*", input);
   ADD_SYM("*OUT*", output);
   ADD_SYM("*PROGRAM*", program_area_ptr);
@@ -601,8 +647,6 @@ int main(const int argc, const char* const argv[const]) {
       }
 
       stack_push(&guest_stack, obj);
-
-      call_guest_function(compile, &guest_stack);
 
       call_guest_function(eval, &guest_stack);
     }
