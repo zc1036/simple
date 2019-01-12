@@ -18,14 +18,19 @@ void* asm_epilogue(void* const pgm) {
   return (char*)pgm + 4;
 }
 
+static intptr_t intptrabs(const intptr_t x) {
+  if (x < 0) return -x;
+  return x;
+}
+
 void* asm_call(void* const pgm, const void* const function) {
   uint8_t* pgmc = pgm;
 
   if (function == NULL) {
     goto longest_jump;
-  } else if ((uintptr_t)pgm - (uintptr_t)function > 0x7fffffe0ULL) {
+  } else if (intptrabs((intptr_t)function - (intptr_t)pgm) < 0x7fffffe0ULL) {
     *pgmc++ = 0xe8; // callq <32-bit immediate offset>
-    *(uint32_t*)pgmc = ((uintptr_t)pgmc + 4 - (uintptr_t)function);
+    *(uint32_t*)pgmc = ((uintptr_t)function - ((uintptr_t)pgmc + 4));
     pgmc += 4;
   } else if ((uintptr_t)function < 0xffffffff) {
     *pgmc++ = 0xb9; // mov ecx, <32-bit immediate>

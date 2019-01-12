@@ -651,6 +651,8 @@ static GUESTFUNC(defun, stack) {
 
   void* const func = *program_area_ptr;
 
+  ADD_SYM(defname->sym.repr, func, symtype_function);
+
   *program_area_ptr = asm_prologue(*program_area_ptr);
 
   while (1) {
@@ -671,8 +673,6 @@ static GUESTFUNC(defun, stack) {
 
   *program_area_ptr = asm_epilogue(*program_area_ptr);
   *program_area_ptr = asm_ret(*program_area_ptr);
-
-  ADD_SYM(defname->sym.repr, func, symtype_function);
 
   return return_to_guest(stack);
 }
