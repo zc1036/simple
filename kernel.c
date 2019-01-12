@@ -156,10 +156,18 @@ typedef long (*guest_function)(void**);
 
 /* Symbol table */
 
+enum symbol_type {
+  symtype_function,
+  symtype_value,
+};
+
+typedef unsigned long symbol_type_t;
+
 struct symtab {
   struct slist list;
   char* symbol_name; // owning pointer
   void* symbol_value; // non-owning
+  symbol_type_t symbol_type;
 };
 
 #define SYMTAB_EMPTY NULL
@@ -174,12 +182,14 @@ static struct symtab* symtab_lookup_symbol(struct symtab* tab, const char* const
 
 static struct symtab* symtab_add_symbol(struct symtab* const tab,
                                         const char* const symbol_name,
-                                        void* const symbol_value)
+                                        void* const symbol_value,
+                                        const enum symbol_type symtype)
 {
   struct symtab* const new_entry = calloc(sizeof(struct symtab), 1);
 
   new_entry->symbol_name = strdup(symbol_name);
   new_entry->symbol_value = symbol_value;
+  new_entry->symbol_type = symtype;
 
   slist_push(&tab->list, &new_entry->list);
 
@@ -305,7 +315,7 @@ static GUESTFUNC(read_symbol, stack) {
     VECTOR_APPEND(&symrepr, char, character);
   }
 
-  struct rd_symbol* sym = calloc(sizeof(*sym), 1);
+  struct rd_symbol* const sym = calloc(sizeof(*sym), 1);
 
   sym->base.type = rd_type_symbol;
   sym->repr = vector_data(&symrepr);
@@ -508,7 +518,11 @@ static GUESTFUNC(eval, stack) {
         error("The name '%s' is undefined", rdobj->sym.repr);
       }
 
-      call_guest_function(obj->symbol_value, &stack);
+      if (obj->symbol_type == symtype_function) {
+        call_guest_function(obj->symbol_value, &stack);
+      } else {
+        stack_push(&stack, obj->symbol_value);
+      }
     }
     break;
   case rd_type_number:
@@ -520,6 +534,30 @@ static GUESTFUNC(eval, stack) {
     error("unimplemented");
   }
 
+  return return_to_guest(stack);
+}
+
+/** Some intrinsics **/
+
+static GUESTFUNC(dup, stack) {
+  void* const value = *stack;
+  stack_push(&stack, value);
+  return return_to_guest(stack);
+}
+
+static GUESTFUNC(mult, stack) {
+  void* const a = stack_pop(&stack),
+      * const b = stack_pop(&stack);
+  
+  stack_push(&stack, (void*)((long)a * (long)b));
+  return return_to_guest(stack);
+}
+
+static GUESTFUNC(print_int, stack) {
+  const long a = (long)stack_pop(&stack);
+
+  printf("%ld\n", a);
+  
   return return_to_guest(stack);
 }
 
@@ -607,12 +645,18 @@ int main(const int argc, const char* const argv[const]) {
 
   /* Register globals */
 
-#define ADD_SYM(NAME, VALUE) *global_symbol_table = symtab_add_symbol(*global_symbol_table, (NAME), (VALUE));
-  ADD_SYM("*SYMTAB*", global_symbol_table);
-  ADD_SYM("*READTAB*", current_readtable);
-  ADD_SYM("*IN*", input);
-  ADD_SYM("*OUT*", output);
-  ADD_SYM("*PROGRAM*", program_area_ptr);
+#define ADD_SYM(NAME, VALUE, SYMTYPE) \
+  *global_symbol_table = symtab_add_symbol(*global_symbol_table, (NAME), (VALUE), (SYMTYPE));
+
+  ADD_SYM("*SYMTAB*", global_symbol_table, symtype_value);
+  ADD_SYM("*READTAB*", current_readtable, symtype_value);
+  ADD_SYM("*IN*", input, symtype_value);
+  ADD_SYM("*OUT*", output, symtype_value);
+  ADD_SYM("*PROGRAM*", program_area_ptr, symtype_value);
+
+  ADD_SYM("DUP", dup, symtype_function);
+  ADD_SYM("*", mult, symtype_function);
+  ADD_SYM("PRINTI", print_int, symtype_function);
 #undef ADD_SYM
 
   /* Create stack */
@@ -655,5 +699,5 @@ int main(const int argc, const char* const argv[const]) {
     *input = NULL;
   }
 
-  return return_to_guest(guest_stack);
+  return 0;
 }
