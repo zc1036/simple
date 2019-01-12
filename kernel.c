@@ -365,7 +365,7 @@ struct readtable {
 static struct symtab** global_symbol_table;
 
 #define ADD_SYM(NAME, VALUE, SYMTYPE) \
-  *global_symbol_table = symtab_add_symbol(*global_symbol_table, (NAME), (VALUE), (SYMTYPE));
+  *global_symbol_table = symtab_add_symbol(*global_symbol_table, (NAME), (void*)(VALUE), (SYMTYPE));
 
 static struct readtable** current_readtable;
 
@@ -380,6 +380,23 @@ static FILE** output;
   long NAME(void** ARGNAME)
 
 /** Reader functions **/
+
+static GUESTFUNC(read_char, stack) {
+  FILE** const stream = stack_pop(&stack);
+
+  stack_push(&stack, (void*)(intptr_t)fgetc(*stream));
+
+  return return_to_guest(stack);
+}
+
+static GUESTFUNC(unread_char, stack) {
+  intptr_t character = (intptr_t)stack_pop(&stack);
+  FILE** const stream = stack_pop(&stack);
+
+  ungetc(character, *stream);
+
+  return return_to_guest(stack);
+}
 
 static GUESTFUNC(read_symbol, stack) {
   intptr_t character = (intptr_t)stack_pop(&stack);
@@ -420,6 +437,9 @@ static GUESTFUNC(read_symbol, stack) {
 }
 
 static GUESTFUNC(read_number, stack) {
+  /* This doesn't always read a number. For example, the tokens "-" and "+" are
+   * symbols, not numbers, but seeing a "-" or "+" will kick off read_number. */
+
   intptr_t character = (intptr_t)stack_pop(&stack);
   FILE* const stream = stack_pop(&stack);
 
@@ -451,6 +471,18 @@ static GUESTFUNC(read_number, stack) {
     }
 
     VECTOR_APPEND(&repr, char, character);
+  }
+
+  if (vector_length(&repr) == 0) {
+    struct rd_symbol* const sym = calloc(sizeof(*sym), 1);
+    char* const repr = calloc(2, 1);
+    *repr = negate ? '-' : '+';
+    sym->base.type = rd_type_symbol;
+    sym->repr = repr;
+
+    stack_push(&stack, sym);
+
+    return return_to_guest(stack);
   }
 
   long value = 0;
@@ -710,6 +742,14 @@ static GUESTFUNC(add, stack) {
   return return_to_guest(stack);
 }
 
+static GUESTFUNC(subtract, stack) {
+  const long a = (long)stack_pop(&stack),
+             b = (long)stack_pop(&stack);
+  
+  stack_push(&stack, (void*)(b - a));
+  return return_to_guest(stack);
+}
+
 static GUESTFUNC(print_int, stack) {
   const long a = (long)stack_pop(&stack);
 
@@ -906,16 +946,17 @@ int main(const int argc, const char* const argv[const]) {
   ADD_SYM("*OUT*", output, symtype_value);
   ADD_SYM("*PROGRAM*", program_area_ptr, symtype_value);
 
+  ADD_SYM("EOF", 0xffffffffffffffffULL, symtype_value);
   ADD_SYM("READ", read, symtype_function);
+  ADD_SYM("READ-CHAR", read_char, symtype_function);
+  ADD_SYM("UNREAD-CHAR", unread_char, symtype_function);
   ADD_SYM("EVAL", eval, symtype_function);
 
   ADD_SYM("SWAP", swap, symtype_function);
   ADD_SYM("DUP", dup, symtype_function);
   ADD_SYM("*", mult, symtype_function);
   ADD_SYM("+", add, symtype_function);
-
-  ADD_SYM("PSET", write_ptr, symtype_function);
-  ADD_SYM("PGET", read_ptr, symtype_function);
+  ADD_SYM("-", subtract, symtype_function);
 
   ADD_SYM("PRINTI", print_int, symtype_function);
   ADD_SYM("PRINTS", print_string, symtype_function);
@@ -924,9 +965,10 @@ int main(const int argc, const char* const argv[const]) {
   ADD_SYM("DEFMACRO", defmacro, symtype_function);
   ADD_SYM("DEFVAL", defval, symtype_function);
 
-  ADD_SYM("PTRSIZE", (void*)sizeof(void*), symtype_value);
+  ADD_SYM("PTRSIZE", sizeof(void*), symtype_value);
   ADD_SYM("ALLOC", allocatemem, symtype_function);
-#undef ADD_SYM
+  ADD_SYM("PSET", write_ptr, symtype_function);
+  ADD_SYM("PGET", read_ptr, symtype_function);
 
   /* Create stack */
 
