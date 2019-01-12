@@ -379,10 +379,37 @@ static GUESTFUNC(read_number, stack) {
 
   return return_to_guest(stack);
 }
+
 static GUESTFUNC(read_string, stack) {
-  error("%s not implemented", __func__);
+  intptr_t character = (intptr_t)stack_pop(&stack);
+  FILE* const stream = stack_pop(&stack);
+
+  struct vector str;
+  vector_new(&str);
+
+  while (1) {
+    character = fgetc(stream);
+
+    if (character == EOF) {
+      error("EOF while reading string");
+    }
+
+    if (character == '"') {
+      break;
+    }
+
+    VECTOR_APPEND(&str, char, character);
+  }
+
+  struct rd_string* const rdstr = calloc(sizeof(*rdstr), 1);
+  rdstr->base.type = rd_type_string;
+  rdstr->contents = vector_data(&str);
+
+  stack_push(&stack, rdstr);
+
   return return_to_guest(stack);
 }
+
 static GUESTFUNC(read_error, stack) {
   error("%s not implemented", __func__);
   return return_to_guest(stack);
@@ -529,6 +556,8 @@ static GUESTFUNC(eval, stack) {
     stack_push(&stack, (void*)rdobj->num.value);
     break;
   case rd_type_string:
+    stack_push(&stack, (void*)rdobj->str.contents);
+    break;
   case rd_type_quote:
   case rd_type_cons:
     error("unimplemented");
@@ -546,8 +575,8 @@ static GUESTFUNC(dup, stack) {
 }
 
 static GUESTFUNC(mult, stack) {
-  void* const a = stack_pop(&stack),
-      * const b = stack_pop(&stack);
+  const void* const a = stack_pop(&stack),
+            * const b = stack_pop(&stack);
   
   stack_push(&stack, (void*)((long)a * (long)b));
   return return_to_guest(stack);
@@ -557,6 +586,14 @@ static GUESTFUNC(print_int, stack) {
   const long a = (long)stack_pop(&stack);
 
   printf("%ld\n", a);
+  
+  return return_to_guest(stack);
+}
+
+static GUESTFUNC(print_string, stack) {
+  const char* const s = stack_pop(&stack);
+
+  printf("%s\n", s);
   
   return return_to_guest(stack);
 }
@@ -657,6 +694,7 @@ int main(const int argc, const char* const argv[const]) {
   ADD_SYM("DUP", dup, symtype_function);
   ADD_SYM("*", mult, symtype_function);
   ADD_SYM("PRINTI", print_int, symtype_function);
+  ADD_SYM("PRINTS", print_string, symtype_function);
 #undef ADD_SYM
 
   /* Create stack */
