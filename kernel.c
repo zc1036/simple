@@ -276,9 +276,15 @@ struct readtable {
 
 static struct symtab** global_symbol_table;
 
+#define ADD_SYM(NAME, VALUE, SYMTYPE) \
+  *global_symbol_table = symtab_add_symbol(*global_symbol_table, (NAME), (VALUE), (SYMTYPE));
+
 static struct readtable** current_readtable;
 
 static unsigned char** program_area_ptr;
+
+static FILE** input;
+static FILE** output;
 
 /* Functions */
 
@@ -424,14 +430,13 @@ static GUESTFUNC(read_list, stack) {
 }
 
 static GUESTFUNC(read, stack) {
-  FILE* const stream = stack_pop(&stack);
+  FILE* const stream = *(FILE**)stack_pop(&stack);
 
   int character = 0;
 
   // the work done below is to fill this out so we know which function
   // is appropriate to read the datum, then we call it and return
   guest_function handler = NULL;
-
 
   while (1) {
     character = fgetc(stream);
@@ -457,7 +462,7 @@ static GUESTFUNC(read, stack) {
       handler = (*current_readtable)->macro_dispatch[character];
 
       if (!handler) {
-        error("Invalid character '%c' (%d)", character, character);
+        error("Macro character '%c' (%d) has no handler", character, character);
       }
 
       break;
@@ -515,6 +520,9 @@ static GUESTFUNC(compile, stack) {
     *program_area_ptr = asm_integer(*program_area_ptr, rdobj->num.value);
     break;
   case rd_type_string:
+    ret = *program_area_ptr;
+    *program_area_ptr = asm_integer(*program_area_ptr, (intptr_t)rdobj->str.contents);
+    break;
   case rd_type_quote:
   case rd_type_cons:
     error("unimplemented");
@@ -575,10 +583,18 @@ static GUESTFUNC(dup, stack) {
 }
 
 static GUESTFUNC(mult, stack) {
-  const void* const a = stack_pop(&stack),
-            * const b = stack_pop(&stack);
+  const long a = (long)stack_pop(&stack),
+             b = (long)stack_pop(&stack);
   
-  stack_push(&stack, (void*)((long)a * (long)b));
+  stack_push(&stack, (void*)(a * b));
+  return return_to_guest(stack);
+}
+
+static GUESTFUNC(add, stack) {
+  const long a = (long)stack_pop(&stack),
+             b = (long)stack_pop(&stack);
+  
+  stack_push(&stack, (void*)(a + b));
   return return_to_guest(stack);
 }
 
@@ -593,8 +609,71 @@ static GUESTFUNC(print_int, stack) {
 static GUESTFUNC(print_string, stack) {
   const char* const s = stack_pop(&stack);
 
-  printf("%s\n", s);
+  puts(s);
   
+  return return_to_guest(stack);
+}
+
+static GUESTFUNC(read_ptr, stack) {
+  void** const ptr = stack_pop(&stack);
+  stack_push(&stack, *ptr);
+  
+  return return_to_guest(stack);
+}
+
+static GUESTFUNC(write_ptr, stack) {
+  void* const value = stack_pop(&stack);
+  void** const ptr = stack_pop(&stack);
+
+  *ptr = value;
+
+  return return_to_guest(stack);
+}
+
+static GUESTFUNC(allocatemem, stack) {
+  const long amt = (long)stack_pop(&stack);
+
+  stack_push(&stack, malloc(amt));
+
+  return return_to_guest(stack);
+}
+
+static GUESTFUNC(defun, stack) {
+  stack_push(&stack, input);
+
+  call_guest_function(read, &stack);
+
+  union rd_any* const defname = stack_pop(&stack);
+
+  if (defname->base.type != rd_type_symbol) {
+    error("DEFUN name must be a symbol");
+  }
+
+  void* const func = *program_area_ptr;
+
+  *program_area_ptr = asm_prologue(*program_area_ptr);
+
+  while (1) {
+    stack_push(&stack, input);
+
+    call_guest_function(read, &stack);
+
+    union rd_any* const obj = stack_pop(&stack);
+
+    if (obj->base.type == rd_type_symbol && strcmp(obj->sym.repr, "DONE") == 0) {
+      break;
+    }
+
+    stack_push(&stack, obj);
+
+    call_guest_function(compile, &stack);
+  }
+
+  *program_area_ptr = asm_epilogue(*program_area_ptr);
+  *program_area_ptr = asm_ret(*program_area_ptr);
+
+  ADD_SYM(defname->sym.repr, func, symtype_function);
+
   return return_to_guest(stack);
 }
 
@@ -621,12 +700,12 @@ static const struct readtable default_readtable = {
     ['=']         = cprop_constituent,
     ['/']         = cprop_constituent,
     ['?']         = cprop_constituent,
+    [';']         = cprop_constituent,
 
     ['-']         = cprop_number_init | cprop_constituent,
     ['+']         = cprop_number_init | cprop_constituent,
     ['0' ... '9'] = cprop_number_init | cprop_number | cprop_constituent,
 
-    [';']         = cprop_macro,
     ['"']         = cprop_macro,
     ['[']         = cprop_macro,
     [']']         = cprop_error,
@@ -654,8 +733,8 @@ int main(const int argc, const char* const argv[const]) {
   global_symbol_table = calloc(sizeof(*global_symbol_table), 1);
   *global_symbol_table = SYMTAB_EMPTY;
 
-  FILE** const input = calloc(sizeof(*input), 1);
-  FILE** const output = calloc(sizeof(*input), 1);
+  input = calloc(sizeof(*input), 1);
+  output = calloc(sizeof(*input), 1);
 
   *output = stdout;
 
@@ -682,19 +761,29 @@ int main(const int argc, const char* const argv[const]) {
 
   /* Register globals */
 
-#define ADD_SYM(NAME, VALUE, SYMTYPE) \
-  *global_symbol_table = symtab_add_symbol(*global_symbol_table, (NAME), (VALUE), (SYMTYPE));
-
   ADD_SYM("*SYMTAB*", global_symbol_table, symtype_value);
   ADD_SYM("*READTAB*", current_readtable, symtype_value);
   ADD_SYM("*IN*", input, symtype_value);
   ADD_SYM("*OUT*", output, symtype_value);
   ADD_SYM("*PROGRAM*", program_area_ptr, symtype_value);
 
+  ADD_SYM("READ", read, symtype_function);
+  ADD_SYM("EVAL", eval, symtype_function);
+
   ADD_SYM("DUP", dup, symtype_function);
   ADD_SYM("*", mult, symtype_function);
+  ADD_SYM("+", add, symtype_function);
+
+  ADD_SYM("PSET", write_ptr, symtype_function);
+  ADD_SYM("PGET", read_ptr, symtype_function);
+
   ADD_SYM("PRINTI", print_int, symtype_function);
   ADD_SYM("PRINTS", print_string, symtype_function);
+
+  ADD_SYM("DEFUN", defun, symtype_function);
+
+  ADD_SYM("PTRSIZE", (void*)sizeof(void*), symtype_value);
+  ADD_SYM("ALLOC", allocatemem, symtype_function);
 #undef ADD_SYM
 
   /* Create stack */
@@ -718,7 +807,7 @@ int main(const int argc, const char* const argv[const]) {
     struct rd_object* obj;
 
     while (1) {
-      stack_push(&guest_stack, *input);
+      stack_push(&guest_stack, input);
 
       call_guest_function(read, &guest_stack);
 

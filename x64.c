@@ -5,11 +5,17 @@
 #include <stdint.h>
 
 void* asm_prologue(void* const pgm) {
-  return pgm;
+  /* we have to do this because the stack has to be aligned to a
+     16-byte boundary, so the CALL instructions in our body will
+     misalign it unless we align it to 8 here */
+  *(uint32_t*)pgm = 0x08ec8348U; // subq rsp, 8
+  return (char*)pgm + 4;
 }
 
 void* asm_epilogue(void* const pgm) {
-  return pgm;
+  /* now undo the alignment stuff we did in the prologue */
+  *(uint32_t*)pgm = 0x08c48348U; // addq rsp, 8
+  return (char*)pgm + 4;
 }
 
 void* asm_call(void* const pgm, const void* const function) {
@@ -34,7 +40,7 @@ longest_jump:
     *(uint64_t*)pgmc = (uint64_t)function;
     pgmc += 8;
     *pgmc++ = 0xff; // callq [rcx]
-    *pgmc++ = 0xe1;
+    *pgmc++ = 0xd1;
   }
 
   return pgmc;
