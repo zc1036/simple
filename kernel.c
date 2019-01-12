@@ -2,23 +2,109 @@
 /* A simple concatenative interpreter */
 
 /*
+  MIT License
+   
+  Copyright (c) 2019 Zach Clark
+   
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+   
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+   
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+*/
+
+/*
 
 Style guide
 ===========
 
+In general, just blend in.
+
+indent
+------
+
+2 spaces.
+
 const-correctness
 -----------------
 
-Values that aren't const MUST BE MODIFIED (potentially conditionally)
-by the function declaring that variable, or else they MUST BE used in
-such a way that requires them to be non-const (i.e. returned as a
-non-const value or passed as a non-const argument).
+Values that aren't const MUST BE MODIFIED (possibly conditionally) by the
+function declaring that variable, or else they MUST BE used in such a way that
+requires them to be non-const (i.e. returned as a non-const value or passed as a
+non-const argument).
+
+In other words, making a variable non-const is a promise to the reader that it
+will be modified (possibly conditionally) at some point in the code.
+
+Unfortunately globals can't be made const even if they're not modified after
+initialization, but we'll just have to hit it with cool and move on.
+
+braces
+------
+
+Braces go on the same line as the declaration unless the argument list is too
+long and needs to be split over multiple lines; in which case the opening brace
+goes on its own line with 0 indent.
+
+multi-line expressions
+----------------------
+
+Put operators at the beginning of lines and wrap all multi-line expressions in
+parentheses, unless it's a simple function call.
+
+DO:
+
+x = (a
+     + b
+     + c);
+
+DONT:
+
+x = (a +
+     b +
+     c);
 
 misc
 ----
 
-Put commas after the last element of sequences, e.g. array initializers,
-enum definitions, etc.
+Include the otherwise-optional comma after the last element of a sequence,
+e.g. an array initializer, an enum definition, etc.
+
+DO:
+
+enum a {
+  b,
+  c,
+};
+
+int x[] = {
+  1,
+  2,
+};
+
+DONT:
+
+enum a {
+  b,
+  c
+};
+
+int x[] = {
+  1,
+  2
+};
 
 */
 
@@ -52,7 +138,8 @@ static void error(const char* const msg, ...) {
 /** Intrusive singly-linked list **/
 
 struct slist {
-  void* next; // this is void* so it can be autocast to the right type
+  void* next; // this is void* so it can be autocast to the right type even
+              // though it should always point to an slist
 };
 
 static void slist_push(struct slist* const list, struct slist* new_node) {
@@ -158,6 +245,7 @@ typedef long (*guest_function)(void**);
 
 enum symbol_type {
   symtype_function,
+  symtype_macro,
   symtype_value,
 };
 
@@ -490,8 +578,6 @@ static GUESTFUNC(read, stack) {
 
   call_guest_function(handler, &stack);
 
-  //struct rd_object* const obj = stack_pop(&stack);
-
   return return_to_guest(stack);
 }
 
@@ -511,8 +597,21 @@ static GUESTFUNC(compile, stack) {
         error("The name '%s' is undefined", rdobj->sym.repr);
       }
 
-      ret = *program_area_ptr;
-      *program_area_ptr = asm_call(*program_area_ptr, obj->symbol_value);
+      switch (obj->symbol_type) {
+      case symtype_function:
+        ret = *program_area_ptr;
+        *program_area_ptr = asm_call(*program_area_ptr, obj->symbol_value);
+        break;
+      case symtype_macro:
+        call_guest_function(obj->symbol_value, &stack);
+        break;
+      case symtype_value:
+        ret = *program_area_ptr;
+        *program_area_ptr = asm_integer(*program_area_ptr, (intptr_t)obj->symbol_value);
+        break;
+      default:
+        error("Bug");
+      }
     }
     break;
   case rd_type_number:
@@ -536,11 +635,12 @@ static GUESTFUNC(compile, stack) {
 /** Evaluator **/
 
 static GUESTFUNC(eval, stack) {
-  /** eval: obj -> ?  
+  /* eval: obj -> ?  
 
-      The eval() function doesn't modify the stack in its own right,
-      but simply evaluates its argument and leaves its results on the
-      stack. **/
+     The eval() function doesn't modify the stack in its own right,
+     but simply evaluates its argument and leaves its results on the
+     stack.
+  */
 
   union rd_any* const rdobj = stack_pop(&stack);
 
@@ -553,10 +653,14 @@ static GUESTFUNC(eval, stack) {
         error("The name '%s' is undefined", rdobj->sym.repr);
       }
 
-      if (obj->symbol_type == symtype_function) {
+      switch (obj->symbol_type) {
+      case symtype_macro:
+      case symtype_function:
         call_guest_function(obj->symbol_value, &stack);
-      } else {
+        break;
+      case symtype_value:
         stack_push(&stack, obj->symbol_value);
+        break;
       }
     }
     break;
@@ -579,6 +683,14 @@ static GUESTFUNC(eval, stack) {
 static GUESTFUNC(dup, stack) {
   void* const value = *stack;
   stack_push(&stack, value);
+  return return_to_guest(stack);
+}
+
+static GUESTFUNC(swap, stack) {
+  void* const value0 = stack[0];
+  void* const value1 = stack[1];
+  stack[1] = value0;
+  stack[0] = value1;
   return return_to_guest(stack);
 }
 
@@ -638,20 +750,22 @@ static GUESTFUNC(allocatemem, stack) {
   return return_to_guest(stack);
 }
 
-static GUESTFUNC(defun, stack) {
+static void define_thing(void** stack, const enum symbol_type thing_type) {
   stack_push(&stack, input);
 
   call_guest_function(read, &stack);
 
-  union rd_any* const defname = stack_pop(&stack);
+  const union rd_any* const defname = stack_pop(&stack);
 
   if (defname->base.type != rd_type_symbol) {
-    error("DEFUN name must be a symbol");
+    error("Definition name must be a symbol");
   }
 
   void* const func = *program_area_ptr;
 
-  ADD_SYM(defname->sym.repr, func, symtype_function);
+  if (thing_type != symtype_value) {
+    ADD_SYM(defname->sym.repr, func, thing_type);
+  }
 
   *program_area_ptr = asm_prologue(*program_area_ptr);
 
@@ -668,11 +782,36 @@ static GUESTFUNC(defun, stack) {
 
     stack_push(&stack, obj);
 
-    call_guest_function(compile, &stack);
+    if (thing_type == symtype_value) {
+      call_guest_function(eval, &stack);
+    } else {
+      call_guest_function(compile, &stack);
+    }
+  }
+
+  if (thing_type == symtype_value) {
+    void* const val = stack_pop(&stack);
+    ADD_SYM(defname->sym.repr, val, symtype_value);
   }
 
   *program_area_ptr = asm_epilogue(*program_area_ptr);
   *program_area_ptr = asm_ret(*program_area_ptr);
+}
+
+static GUESTFUNC(defun, stack) {
+  define_thing(stack, symtype_function);
+
+  return return_to_guest(stack);
+}
+
+static GUESTFUNC(defmacro, stack) {
+  define_thing(stack, symtype_macro);
+
+  return return_to_guest(stack);
+}
+
+static GUESTFUNC(defval, stack) {
+  define_thing(stack, symtype_value);
 
   return return_to_guest(stack);
 }
@@ -770,6 +909,7 @@ int main(const int argc, const char* const argv[const]) {
   ADD_SYM("READ", read, symtype_function);
   ADD_SYM("EVAL", eval, symtype_function);
 
+  ADD_SYM("SWAP", swap, symtype_function);
   ADD_SYM("DUP", dup, symtype_function);
   ADD_SYM("*", mult, symtype_function);
   ADD_SYM("+", add, symtype_function);
@@ -781,6 +921,8 @@ int main(const int argc, const char* const argv[const]) {
   ADD_SYM("PRINTS", print_string, symtype_function);
 
   ADD_SYM("DEFUN", defun, symtype_function);
+  ADD_SYM("DEFMACRO", defmacro, symtype_function);
+  ADD_SYM("DEFVAL", defval, symtype_function);
 
   ADD_SYM("PTRSIZE", (void*)sizeof(void*), symtype_value);
   ADD_SYM("ALLOC", allocatemem, symtype_function);

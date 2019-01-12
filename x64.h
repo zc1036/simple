@@ -26,7 +26,6 @@ static inline long return_to_guest(void** stackptr) {
   long x;
 
   asm volatile ("mov %1, %%rdi;"
-                "xor %0, %0"
                 : "=r" (x)
                 : "r" (stackptr)
                 : "%rdi");

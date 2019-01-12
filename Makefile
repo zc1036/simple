@@ -1,7 +1,17 @@
 
-ivy: kernel.c x64.c
-	gcc -Wall -g kernel.c x64.c -o ivy
+FLAGS := -Wall
 
-.PHONY: clean
+.PHONY: clean debug release
+
+debug: ivy
+release: ivy
+
+debug: FLAGS += -g
+
+release: FLAGS += -O3
+
+ivy: kernel.c x64.c x64.h Makefile
+	gcc $(FLAGS) kernel.c x64.c -o ivy
+
 clean:
 	rm -f ivy

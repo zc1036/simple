@@ -34,7 +34,7 @@ void* asm_call(void* const pgm, const void* const function) {
     pgmc += 4;
   } else if ((uintptr_t)function < 0xffffffff) {
     *pgmc++ = 0xb9; // mov ecx, <32-bit immediate>
-    *(uint32_t*)pgmc = (uint32_t)function;
+    *(uint32_t*)pgmc = (uintptr_t)function;
     pgmc += 4;
     *pgmc++ = 0xff; // call [rcx]
     *pgmc++ = 0xd1;
