@@ -3,15 +3,15 @@ FLAGS := -Wall
 
 .PHONY: clean debug release
 
-debug: ivy
-release: ivy
+debug: simple
+release: simple
 
 debug: FLAGS += -g
 
 release: FLAGS += -O3
 
-ivy: kernel.c x64.c x64.h Makefile
-	gcc $(FLAGS) kernel.c x64.c -o ivy
+simple: kernel.c x64.c x64.h Makefile
+	gcc $(FLAGS) kernel.c x64.c -o simple
 
 clean:
-	rm -f ivy
+	rm -f simple
